@@ -356,7 +356,6 @@
 <script>
   const SCRIPT_URL = 'https://spe-proxy.unic-petroleumengineers.workers.dev/';
 
-  // Fetch-based API caller
   async function api(fn, ...args) {
     const resp = await fetch(SCRIPT_URL, {
       method: 'POST',
@@ -368,44 +367,26 @@
     return data.result;
   }
 
-  // Simple chain object returned by google.script.run.fnName()
-  // Usage: google.script.run.withSuccessHandler(cb).withFailureHandler(eb).fnName(args)
-  class RunChain {
-    constructor() {
-      this._success = null;
-      this._failure = null;
-    }
-    withSuccessHandler(cb) { this._success = cb; return this; }
-    withFailureHandler(cb) { this._failure = cb; return this; }
-  }
-
-  // google.script.run shim
-  const google = {
-    script: {
-      run: new Proxy({}, {
-        get(_, fn) {
-          // withSuccessHandler / withFailureHandler called directly on run
-          if (fn === 'withSuccessHandler' || fn === 'withFailureHandler') {
-            const chain = new RunChain();
-            return chain[fn].bind(chain);
-          }
-          // Any other property = function name to call
-          const chain = new RunChain();
-          const caller = function(...args) {
-            api(fn, ...args)
-              .then(r  => { if (chain._success) chain._success(r); })
-              .catch(e => { if (chain._failure) chain._failure(e); });
+  // google.script.run shim — supports chained .withSuccessHandler().withFailureHandler().fnName()
+  const google = { script: { run: {} } };
+  (function() {
+    function makeChain(s, f) {
+      const chain = {
+        withSuccessHandler: function(cb) { return makeChain(cb, f); },
+        withFailureHandler: function(cb) { return makeChain(s, cb); }
+      };
+      return new Proxy(chain, {
+        get(target, prop) {
+          if (prop in target) return target[prop];
+          return function(...args) {
+            api(prop, ...args).then(r => s && s(r)).catch(e => f && f(e));
           };
-          // Allow .withSuccessHandler().withFailureHandler().fn() pattern
-          caller.withSuccessHandler = (cb) => { chain._success = cb; return caller; };
-          caller.withFailureHandler = (cb) => { chain._failure = cb; return caller; };
-          return caller;
         }
-      })
+      });
     }
-  };
+    google.script.run = makeChain(null, null);
+  })();
 
-  
   let currentMember = null;
 
   // ── Mobile scale fix ──
